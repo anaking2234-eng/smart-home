@@ -1,0 +1,180 @@
+// ===== المرحلة 2: زيادة حساس الشباك =====
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#include <Keypad.h>
+#include <string.h>
+
+const byte PIN_BUZZER  = 11;
+const byte PIN_WINDOW  = 13;
+
+const char PASSWORD[] = "1234";
+const byte MAX_DIGITS = 8;
+const unsigned long MSG_TIME = 1500UL;
+const unsigned long WINDOW_DEBOUNCE = 50UL;
+
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+
+const byte ROWS = 4;
+const byte COLS = 4;
+char keys[ROWS][COLS] = {
+  {'1', '2', '3', 'A'},
+  {'4', '5', '6', 'B'},
+  {'7', '8', '9', 'C'},
+  {'*', '0', '#', 'D'}
+};
+byte rowPins[ROWS] = {9, 8, 7, 6};
+byte colPins[COLS] = {5, 4, 3, 2};
+Keypad keypad = Keypad(makeKeymap(keys), rowPins, colPins, ROWS, COLS);
+
+char typed[MAX_DIGITS + 1];
+byte typedLen = 0;
+bool windowAlarm = false;
+
+bool windowOpen = false;
+bool windowRawOpen = false;
+unsigned long windowChangeAt = 0;
+
+char msg1[17] = "";
+char msg2[17] = "";
+bool msgActive = false;
+unsigned long msgStart = 0;
+char shown1[17] = "";
+char shown2[17] = "";
+bool shownCursor = false;
+byte shownCursorCol = 255;
+
+bool alarmActive() { return windowAlarm; }
+
+void setLine(char* dst, const char* src) {
+  byte i = 0;
+  while (i < 16 && src[i] != '\0') { dst[i] = src[i]; i++; }
+  while (i < 16) { dst[i] = ' '; i++; }
+  dst[16] = '\0';
+}
+
+void showMessage(const char* line1, const char* line2) {
+  strncpy(msg1, line1, 16); msg1[16] = '\0';
+  strncpy(msg2, line2, 16); msg2[16] = '\0';
+  msgStart = millis();
+  msgActive = true;
+}
+
+void checkPassword() {
+  if (typedLen == 0) return;
+  typed[typedLen] = '\0';
+  bool correct = (strcmp(typed, PASSWORD) == 0);
+  typedLen = 0;
+
+  if (correct) {
+    if (windowAlarm) windowAlarm = false;
+    else showMessage("Correct!", "Welcome");
+  } else {
+    if (alarmActive()) return;
+    showMessage("Wrong code", " ");
+  }
+}
+
+void handleKey(char k) {
+  if (k >= '0' && k <= '9') {
+    if (typedLen < MAX_DIGITS) typed[typedLen++] = k;
+  } else if (k == '#') {
+    checkPassword();
+  }
+}
+
+void updateWindow() {
+  bool raw = digitalRead(PIN_WINDOW) == HIGH;
+  if (raw != windowRawOpen) {
+    windowRawOpen = raw;
+    windowChangeAt = millis();
+  }
+  if ((millis() - windowChangeAt >= WINDOW_DEBOUNCE) &&
+      (windowRawOpen != windowOpen)) {
+    windowOpen = windowRawOpen;
+    if (windowOpen) windowAlarm = true;
+  }
+}
+
+void updateBuzzer() {
+  digitalWrite(PIN_BUZZER, alarmActive() ? HIGH : LOW);
+}
+
+void updateMessage() {
+  if (msgActive && millis() - msgStart >= MSG_TIME) msgActive = false;
+}
+
+void render() {
+  char line1[17], line2[17], buf[17];
+  bool wantCursor = false;
+  byte cursorCol = 0;
+
+  if (alarmActive()) {
+    setLine(line1, "ALARM! WINDOW");
+    if (typedLen > 0) {
+      for (byte i = 0; i < typedLen; i++) buf[i] = '*';
+      buf[typedLen] = '\0';
+      setLine(line2, buf);
+      wantCursor = true;
+      cursorCol = typedLen;
+    } else setLine(line2, "Enter password");
+  } else if (typedLen > 0) {
+    setLine(line1, "Enter password");
+    for (byte i = 0; i < typedLen; i++) buf[i] = '*';
+    buf[typedLen] = '\0';
+    setLine(line2, buf);
+    wantCursor = true;
+    cursorCol = typedLen;
+  } else if (msgActive) {
+    setLine(line1, msg1);
+    setLine(line2, msg2);
+  } else {
+    setLine(line1, "Enter password");
+    setLine(line2, " ");
+    wantCursor = true;
+    cursorCol = 0;
+  }
+
+  bool rewritten = false;
+  if (strcmp(line1, shown1) != 0) {
+    lcd.setCursor(0, 0);
+    lcd.print(line1);
+    strcpy(shown1, line1);
+    rewritten = true;
+  }
+  if (strcmp(line2, shown2) != 0) {
+    lcd.setCursor(0, 1);
+    lcd.print(line2);
+    strcpy(shown2, line2);
+    rewritten = true;
+  }
+  if (rewritten || wantCursor != shownCursor || cursorCol != shownCursorCol) {
+    if (wantCursor) {
+      lcd.setCursor(cursorCol, 1);
+      lcd.blink();
+    } else lcd.noBlink();
+    shownCursor = wantCursor;
+    shownCursorCol = cursorCol;
+  }
+}
+
+void setup() {
+  pinMode(PIN_BUZZER, OUTPUT);
+  digitalWrite(PIN_BUZZER, LOW);
+  pinMode(PIN_WINDOW, INPUT_PULLUP);
+  windowRawOpen = digitalRead(PIN_WINDOW) == HIGH;
+  windowOpen = windowRawOpen;
+
+  lcd.init();
+  lcd.backlight();
+  lcd.clear();
+}
+
+void loop() {
+  char key = keypad.getKey();
+  if (key) handleKey(key);
+
+  updateWindow();
+  updateMessage();
+  updateBuzzer();
+  render();
+}
